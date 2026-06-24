@@ -1,8 +1,20 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+const mockFetch = vi.fn();
 
 describe('CexRoutingService', () => {
   beforeEach(() => {
     vi.resetModules();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ id: 'mock-withdrawal-id', txId: 'mock-tx-hash' }),
+      text: vi.fn().mockResolvedValue('ok'),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('routes a binance withdrawal', async () => {

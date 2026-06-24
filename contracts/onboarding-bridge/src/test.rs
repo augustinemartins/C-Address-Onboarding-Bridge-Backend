@@ -1,9 +1,8 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype,
-    testutils::Address as _,
-    Address, Env, IntoVal, MuxedAddress, String, Symbol, Vec,
+    contract, contractimpl, contracttype, testutils::Address as _, Address, Env, IntoVal,
+    MuxedAddress, String, Symbol, Vec,
 };
 
 use super::*;
@@ -26,24 +25,51 @@ impl TestToken {
     pub fn transfer(env: Env, from: Address, to: MuxedAddress, amount: i128) {
         from.require_auth();
         let to_addr = to.address();
-        let from_bal = env.storage().persistent().get::<TK, i128>(&TK::Bal(from.clone())).unwrap_or(0);
-        let to_bal = env.storage().persistent().get::<TK, i128>(&TK::Bal(to_addr.clone())).unwrap_or(0);
-        env.storage().persistent().set(&TK::Bal(from), &(from_bal - amount));
-        env.storage().persistent().set(&TK::Bal(to_addr), &(to_bal + amount));
+        let from_bal = env
+            .storage()
+            .persistent()
+            .get::<TK, i128>(&TK::Bal(from.clone()))
+            .unwrap_or(0);
+        let to_bal = env
+            .storage()
+            .persistent()
+            .get::<TK, i128>(&TK::Bal(to_addr.clone()))
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&TK::Bal(from), &(from_bal - amount));
+        env.storage()
+            .persistent()
+            .set(&TK::Bal(to_addr), &(to_bal + amount));
     }
 
     pub fn balance(env: Env, id: Address) -> i128 {
-        env.storage().persistent().get::<TK, i128>(&TK::Bal(id)).unwrap_or(0)
+        env.storage()
+            .persistent()
+            .get::<TK, i128>(&TK::Bal(id))
+            .unwrap_or(0)
     }
 
     pub fn mint(env: Env, to: Address, amount: i128) {
-        let bal = env.storage().persistent().get::<TK, i128>(&TK::Bal(to.clone())).unwrap_or(0);
-        env.storage().persistent().set(&TK::Bal(to), &(bal + amount));
+        let bal = env
+            .storage()
+            .persistent()
+            .get::<TK, i128>(&TK::Bal(to.clone()))
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&TK::Bal(to), &(bal + amount));
     }
 
-    pub fn decimals(_env: Env) -> u32 { 7 }
-    pub fn name(env: Env) -> String { String::from_str(&env, "TestToken") }
-    pub fn symbol(env: Env) -> String { String::from_str(&env, "TEST") }
+    pub fn decimals(_env: Env) -> u32 {
+        7
+    }
+    pub fn name(env: Env) -> String {
+        String::from_str(&env, "TestToken")
+    }
+    pub fn symbol(env: Env) -> String {
+        String::from_str(&env, "TEST")
+    }
 }
 
 // ---------------------------------------------------------------------------

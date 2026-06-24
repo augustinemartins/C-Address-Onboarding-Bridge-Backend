@@ -1,10 +1,16 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import request from 'supertest';
 
 process.env.NODE_ENV = 'test';
 process.env.SOROBAN_RPC_URL = 'https://soroban-rpc.testnet.stellar.org';
 process.env.BRIDGE_FEE_BPS = '30';
 process.env.API_KEYS = 'test-api-key-123';
+
+vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+  ok: true,
+  json: vi.fn().mockResolvedValue({ id: 'mock-withdrawal-id', txId: 'mock-tx-hash' }),
+  text: vi.fn().mockResolvedValue('ok'),
+}));
 
 let app: import('express').Express;
 

@@ -1,9 +1,7 @@
 #![no_std]
+#![allow(deprecated)]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype,
-    Address, Env, String, Symbol,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Symbol};
 
 #[contracttype]
 #[derive(Clone)]
@@ -27,12 +25,12 @@ impl OnboardingBridge {
         assert!(fee_bps <= 10000, "fee_bps must be <= 10000");
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::FeeBps, &fee_bps);
-        env.storage().instance().set(&DataKey::AccumulatedFees, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::AccumulatedFees, &0i128);
         env.storage().instance().set(&DataKey::Version, &1u32);
-        env.events().publish(
-            (Symbol::new(&env, "initialize"),),
-            (admin, fee_bps),
-        );
+        env.events()
+            .publish((Symbol::new(&env, "initialize"),), (admin, fee_bps));
     }
 
     pub fn version(env: Env) -> u32 {
@@ -40,7 +38,10 @@ impl OnboardingBridge {
     }
 
     pub fn admin(env: Env) -> Address {
-        env.storage().instance().get(&DataKey::Admin).expect("not initialized")
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized")
     }
 
     pub fn fee_bps(env: Env) -> u32 {
@@ -48,18 +49,23 @@ impl OnboardingBridge {
     }
 
     pub fn accumulated_fees(env: Env) -> i128 {
-        env.storage().instance().get(&DataKey::AccumulatedFees).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::AccumulatedFees)
+            .unwrap_or(0)
     }
 
     pub fn set_fee(env: Env, new_fee_bps: u32) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
         admin.require_auth();
         assert!(new_fee_bps <= 10000, "fee_bps must be <= 10000");
         env.storage().instance().set(&DataKey::FeeBps, &new_fee_bps);
-        env.events().publish(
-            (Symbol::new(&env, "set_fee"),),
-            (new_fee_bps,),
-        );
+        env.events()
+            .publish((Symbol::new(&env, "set_fee"),), (new_fee_bps,));
     }
 
     /// Record a funding event. The caller is responsible for the token transfer.
@@ -80,8 +86,14 @@ impl OnboardingBridge {
         };
 
         if fee_amount > 0 {
-            let accumulated: i128 = env.storage().instance().get(&DataKey::AccumulatedFees).unwrap_or(0);
-            env.storage().instance().set(&DataKey::AccumulatedFees, &(accumulated + fee_amount));
+            let accumulated: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::AccumulatedFees)
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&DataKey::AccumulatedFees, &(accumulated + fee_amount));
         }
 
         env.events().publish(
@@ -95,15 +107,28 @@ impl OnboardingBridge {
     /// Withdraw accumulated fees to `to`. The caller must transfer the
     /// token amount to `to` separately.
     pub fn withdraw_fees(env: Env, to: Address, token_address: Address, amount: i128) -> i128 {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
         admin.require_auth();
 
-        let accumulated: i128 = env.storage().instance().get(&DataKey::AccumulatedFees).unwrap_or(0);
+        let accumulated: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AccumulatedFees)
+            .unwrap_or(0);
         let withdraw_amount = if amount == 0 { accumulated } else { amount };
-        assert!(withdraw_amount <= accumulated, "insufficient accumulated fees");
+        assert!(
+            withdraw_amount <= accumulated,
+            "insufficient accumulated fees"
+        );
 
         let remaining = accumulated - withdraw_amount;
-        env.storage().instance().set(&DataKey::AccumulatedFees, &remaining);
+        env.storage()
+            .instance()
+            .set(&DataKey::AccumulatedFees, &remaining);
 
         env.events().publish(
             (Symbol::new(&env, "withdrawn"),),
