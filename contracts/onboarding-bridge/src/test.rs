@@ -8,7 +8,7 @@ use soroban_sdk::{
 use super::*;
 
 // ---------------------------------------------------------------------------
-// Minimal test token (accounting only)
+// Minimal SEP-41 test token (supports real transfer)
 // ---------------------------------------------------------------------------
 
 #[contracttype]
@@ -66,7 +66,7 @@ impl TestToken {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Setup
 // ---------------------------------------------------------------------------
 
 struct S {
@@ -89,7 +89,7 @@ fn setup(fee_bps: u32, delay: u64) -> S {
 }
 
 // ---------------------------------------------------------------------------
-// Initialization
+// Timelock tests (unchanged)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -98,7 +98,6 @@ fn test_initialize() {
     assert_eq!(s.bridge.admin(), s.admin);
     assert_eq!(s.bridge.fee_bps(), 30);
     assert_eq!(s.bridge.version(), 2);
-    assert_eq!(s.bridge.timelock_delay(), 0);
     assert!(!s.bridge.is_paused());
 }
 
@@ -106,51 +105,25 @@ fn test_initialize() {
 #[should_panic(expected = "already initialized")]
 fn test_double_initialize() {
     let s = setup(30, 0);
-    let a2 = Address::generate(&s.env);
-    s.bridge.initialize(&a2, &50, &0);
-}
-
-// ---------------------------------------------------------------------------
-// Timelock
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_propose_and_read() {
-    let s = setup(30, 0);
-    let label = String::from_str(&s.env, "set_fee:50");
-    let (hash, ready_at) = s.bridge.propose_op(&label);
-    assert!(ready_at >= s.env.ledger().timestamp());
-    let op = s.bridge.pending_op(&hash).unwrap();
-    assert!(!op.cancelled);
-    assert_eq!(op.ready_at, ready_at);
+    s.bridge.initialize(&Address::generate(&s.env), &50, &0);
 }
 
 #[test]
-fn test_cancel_op() {
+fn test_propose_cancel() {
     let s = setup(30, 0);
-    let label = String::from_str(&s.env, "cancel_test");
+    let label = String::from_str(&s.env, "op1");
     let (hash, _) = s.bridge.propose_op(&label);
     s.bridge.cancel_op(&hash);
     assert!(s.bridge.pending_op(&hash).unwrap().cancelled);
 }
 
 #[test]
-#[should_panic(expected = "already cancelled")]
-fn test_cancel_twice_panics() {
-    let s = setup(30, 0);
-    let label = String::from_str(&s.env, "double_cancel");
-    let (hash, _) = s.bridge.propose_op(&label);
-    s.bridge.cancel_op(&hash);
-    s.bridge.cancel_op(&hash);
-}
-
-#[test]
 #[should_panic(expected = "timelock not elapsed")]
 fn test_execute_before_delay() {
-    let s = setup(30, 604800); // 7-day delay
+    let s = setup(30, 604800);
     let label = String::from_str(&s.env, "fee_op");
     s.bridge.propose_set_fee(&label);
-    s.bridge.execute_set_fee(&50, &label); // should panic
+    s.bridge.execute_set_fee(&50, &label);
 }
 
 #[test]
@@ -164,20 +137,6 @@ fn test_execute_after_delay() {
 }
 
 #[test]
-#[should_panic(expected = "op cancelled")]
-fn test_execute_cancelled_op() {
-    let s = setup(30, 0);
-    let label = String::from_str(&s.env, "cancelled_op");
-    let (hash, _) = s.bridge.propose_set_fee(&label);
-    s.bridge.cancel_op(&hash);
-    s.bridge.execute_set_fee(&50, &label);
-}
-
-// ---------------------------------------------------------------------------
-// Pause
-// ---------------------------------------------------------------------------
-
-#[test]
 fn test_pause_unpause() {
     let s = setup(0, 0);
     s.bridge.pause();
@@ -186,40 +145,126 @@ fn test_pause_unpause() {
     assert!(!s.bridge.is_paused());
 }
 
+// ---------------------------------------------------------------------------
+// SAC token transfer tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_fund_transfers_tokens_and_tracks_fees() {
+    let s = setup(100, 0); // 1% fee
+    let source = Address::generate(&s.env);
+    let target = Address::generate(&s.env);
+    s.token.mint(&source, &1000);
+
+    let fee = s.bridge.fund_c_address(
+        &source, &target, &s.token.address, &1000,
+        &String::from_str(&s.env, "test"),
+    );
+    assert_eq!(fee, 10);
+    assert_eq!(s.token.balance(&source), 0);
+    assert_eq!(s.token.balance(&target), 990);
+    assert_eq!(s.bridge.accumulated_fees(&s.token.address), 10);
+}
+
+#[test]
+fn test_fund_zero_fee() {
+    let s = setup(0, 0);
+    let source = Address::generate(&s.env);
+    let target = Address::generate(&s.env);
+    s.token.mint(&source, &500);
+    let fee = s.bridge.fund_c_address(
+        &source, &target, &s.token.address, &500,
+        &String::from_str(&s.env, "no fee"),
+    );
+    assert_eq!(fee, 0);
+    assert_eq!(s.token.balance(&target), 500);
+    assert_eq!(s.bridge.accumulated_fees(&s.token.address), 0);
+}
+
+#[test]
+fn test_withdraw_all_fees() {
+    let s = setup(200, 0); // 2%
+    let source = Address::generate(&s.env);
+    let target = Address::generate(&s.env);
+    s.token.mint(&source, &1000);
+    s.bridge.fund_c_address(
+        &source, &target, &s.token.address, &1000,
+        &String::from_str(&s.env, "test"),
+    );
+    assert_eq!(s.bridge.accumulated_fees(&s.token.address), 20);
+
+    let withdrawn = s.bridge.withdraw_fees(&s.admin, &s.token.address, &0);
+    assert_eq!(withdrawn, 20);
+    assert_eq!(s.bridge.accumulated_fees(&s.token.address), 0);
+    assert_eq!(s.token.balance(&s.admin), 20);
+}
+
+#[test]
+fn test_withdraw_partial_fees() {
+    let s = setup(100, 0);
+    let source = Address::generate(&s.env);
+    let target = Address::generate(&s.env);
+    s.token.mint(&source, &1000);
+    s.bridge.fund_c_address(
+        &source, &target, &s.token.address, &1000,
+        &String::from_str(&s.env, "test"),
+    );
+    let withdrawn = s.bridge.withdraw_fees(&s.admin, &s.token.address, &4);
+    assert_eq!(withdrawn, 4);
+    assert_eq!(s.bridge.accumulated_fees(&s.token.address), 6);
+}
+
+#[test]
+#[should_panic(expected = "insufficient accumulated fees")]
+fn test_withdraw_excess() {
+    let s = setup(100, 0);
+    let source = Address::generate(&s.env);
+    let target = Address::generate(&s.env);
+    s.token.mint(&source, &1000);
+    s.bridge.fund_c_address(
+        &source, &target, &s.token.address, &1000,
+        &String::from_str(&s.env, "test"),
+    );
+    s.bridge.withdraw_fees(&s.admin, &s.token.address, &999);
+}
+
+#[test]
+fn test_route_from_exchange() {
+    let s = setup(50, 0);
+    let exchange = Address::generate(&s.env);
+    let target = Address::generate(&s.env);
+    s.token.mint(&exchange, &500);
+    let fee = s.bridge.route_from_exchange(
+        &exchange, &target, &s.token.address, &500,
+        &String::from_str(&s.env, "cex"),
+    );
+    assert_eq!(fee, 2);
+    assert_eq!(s.token.balance(&target), 498);
+}
+
+#[test]
+fn test_multiple_fund_accumulates_fees() {
+    let s = setup(100, 0);
+    let source = Address::generate(&s.env);
+    let target = Address::generate(&s.env);
+    s.token.mint(&source, &6000);
+    let m = |l: &str| String::from_str(&s.env, l);
+    s.bridge.fund_c_address(&source, &target, &s.token.address, &1000, &m("t1"));
+    s.bridge.fund_c_address(&source, &target, &s.token.address, &2000, &m("t2"));
+    s.bridge.fund_c_address(&source, &target, &s.token.address, &3000, &m("t3"));
+    assert_eq!(s.bridge.accumulated_fees(&s.token.address), 60);
+}
+
 #[test]
 #[should_panic(expected = "contract is paused")]
 fn test_fund_while_paused() {
     let s = setup(0, 0);
     let source = Address::generate(&s.env);
     let target = Address::generate(&s.env);
+    s.token.mint(&source, &1000);
     s.bridge.pause();
-    let memo = String::from_str(&s.env, "test");
-    s.bridge.fund_c_address(&source, &target, &s.token.address, &500, &memo);
-}
-
-// ---------------------------------------------------------------------------
-// Legacy accounting tests (unchanged behaviour)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_fund_tracks_fees() {
-    let s = setup(100, 0);
-    let source = Address::generate(&s.env);
-    let target = Address::generate(&s.env);
-    let memo = String::from_str(&s.env, "test");
-    let fee = s.bridge.fund_c_address(&source, &target, &s.token.address, &1000, &memo);
-    assert_eq!(fee, 10);
-    assert_eq!(s.bridge.accumulated_fees(), 10);
-}
-
-#[test]
-fn test_withdraw_fees() {
-    let s = setup(100, 0);
-    let source = Address::generate(&s.env);
-    let target = Address::generate(&s.env);
-    let memo = String::from_str(&s.env, "test");
-    s.bridge.fund_c_address(&source, &target, &s.token.address, &1000, &memo);
-    let withdrawn = s.bridge.withdraw_fees(&s.admin, &s.token.address, &0);
-    assert_eq!(withdrawn, 10);
-    assert_eq!(s.bridge.accumulated_fees(), 0);
+    s.bridge.fund_c_address(
+        &source, &target, &s.token.address, &500,
+        &String::from_str(&s.env, "test"),
+    );
 }

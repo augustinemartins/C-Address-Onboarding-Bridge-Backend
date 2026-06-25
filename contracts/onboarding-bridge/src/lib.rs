@@ -2,7 +2,7 @@
 #![allow(deprecated)]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Symbol,
+    contract, contractimpl, contracttype, token, Address, Bytes, BytesN, Env, String, Symbol,
 };
 
 // ---------------------------------------------------------------------------
@@ -14,7 +14,7 @@ use soroban_sdk::{
 pub enum DataKey {
     Admin,
     FeeBps,
-    AccumulatedFees,
+    AccumulatedFees(Address), // per-token, keyed by token address
     Version,
     // Timelock
     TimelockDelay,
@@ -126,15 +126,16 @@ impl OnboardingBridge {
         env.storage().instance().set(&DataKey::FeeBps, &fee_bps);
         env.storage()
             .instance()
-            .set(&DataKey::AccumulatedFees, &0i128);
-        env.storage()
-            .instance()
             .set(&DataKey::TimelockDelay, &timelock_delay);
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().set(&DataKey::Version, &2u32);
         env.events()
             .publish((Symbol::new(&env, "initialize"),), (admin, fee_bps));
     }
+
+    // -----------------------------------------------------------------------
+    // Getters
+    // -----------------------------------------------------------------------
 
     pub fn version(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Version).unwrap_or(0)
@@ -148,10 +149,11 @@ impl OnboardingBridge {
         env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0)
     }
 
-    pub fn accumulated_fees(env: Env) -> i128 {
+    /// Returns accumulated fees for a specific token.
+    pub fn accumulated_fees(env: Env, token: Address) -> i128 {
         env.storage()
             .instance()
-            .get(&DataKey::AccumulatedFees)
+            .get(&DataKey::AccumulatedFees(token))
             .unwrap_or(0)
     }
 
@@ -235,7 +237,7 @@ impl OnboardingBridge {
     }
 
     // -----------------------------------------------------------------------
-    // Emergency pause (no timelock)
+    // Emergency pause
     // -----------------------------------------------------------------------
 
     pub fn pause(env: Env) {
@@ -253,48 +255,55 @@ impl OnboardingBridge {
     }
 
     // -----------------------------------------------------------------------
-    // Core funding (accounting only — token transfer is caller's responsibility)
+    // Core: fund via SAC token transfer
     // -----------------------------------------------------------------------
 
     pub fn fund_c_address(
         env: Env,
         source: Address,
         target: Address,
-        _token_address: Address,
+        token_address: Address,
         amount: i128,
-        _memo: String,
+        memo: String,
     ) -> i128 {
         assert_not_paused(&env);
+        source.require_auth();
+
         let fee_bps: u32 = env.storage().instance().get(&DataKey::FeeBps).unwrap_or(0);
         let fee_amount = if fee_bps > 0 {
             (amount * fee_bps as i128) / 10000
         } else {
             0i128
         };
+        let net_amount = amount - fee_amount;
+
+        // SAC cross-contract token transfers
+        let tk = token::Client::new(&env, &token_address);
+        tk.transfer(&source, &env.current_contract_address(), &amount);
+        tk.transfer(&env.current_contract_address(), &target, &net_amount);
+
+        // Accumulate per-token fees
         if fee_amount > 0 {
-            let acc: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::AccumulatedFees)
-                .unwrap_or(0);
-            env.storage()
-                .instance()
-                .set(&DataKey::AccumulatedFees, &(acc + fee_amount));
+            let key = DataKey::AccumulatedFees(token_address.clone());
+            let acc: i128 = env.storage().instance().get(&key).unwrap_or(0);
+            env.storage().instance().set(&key, &(acc + fee_amount));
         }
+
         env.events().publish(
             (Symbol::new(&env, "funded"),),
-            (source, target, amount, fee_amount),
+            (source, target, amount, fee_amount, memo),
         );
         fee_amount
     }
 
+    // -----------------------------------------------------------------------
+    // Withdraw accumulated fees for a specific token
+    // -----------------------------------------------------------------------
+
     pub fn withdraw_fees(env: Env, to: Address, token_address: Address, amount: i128) -> i128 {
         require_admin(&env);
-        let accumulated: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::AccumulatedFees)
-            .unwrap_or(0);
+        let key = DataKey::AccumulatedFees(token_address.clone());
+        let accumulated: i128 = env.storage().instance().get(&key).unwrap_or(0);
         let withdraw_amount = if amount == 0 { accumulated } else { amount };
         assert!(
             withdraw_amount <= accumulated,
@@ -302,7 +311,11 @@ impl OnboardingBridge {
         );
         env.storage()
             .instance()
-            .set(&DataKey::AccumulatedFees, &(accumulated - withdraw_amount));
+            .set(&key, &(accumulated - withdraw_amount));
+
+        let tk = token::Client::new(&env, &token_address);
+        tk.transfer(&env.current_contract_address(), &to, &withdraw_amount);
+
         env.events().publish(
             (Symbol::new(&env, "withdrawn"),),
             (to, token_address, withdraw_amount),
